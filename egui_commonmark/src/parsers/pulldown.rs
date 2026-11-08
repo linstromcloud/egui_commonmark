@@ -65,8 +65,93 @@ impl Newline {
 
 #[derive(Default)]
 struct DefinitionList {
-    is_first_item: bool,
-    is_def_list_def: bool,
+    /// A definition list started; `definition_list` lays it out next.
+    is_def_list: bool,
+}
+
+/// One term and its definitions, without their wrapping tags.
+struct DefinitionEntry<'e> {
+    term: Vec<(pulldown_cmark::Event<'e>, Range<usize>)>,
+    definitions: Vec<Vec<(pulldown_cmark::Event<'e>, Range<usize>)>>,
+}
+
+/// Consumes events through the end of the current definition list and
+/// groups them into entries. A nested definition list stays inside the
+/// definition that contains it.
+fn parse_definition_list<'e>(
+    events: &mut impl Iterator<Item = EventIteratorItem<'e>>,
+) -> Vec<DefinitionEntry<'e>> {
+    use pulldown_cmark::{Event, Tag, TagEnd};
+
+    enum Part {
+        Between,
+        Term,
+        Definition,
+    }
+
+    let mut entries: Vec<DefinitionEntry<'e>> = Vec::new();
+    let mut part = Part::Between;
+    let mut depth = 0usize;
+    for (_, (event, src_span)) in events.by_ref() {
+        if depth == 0 {
+            match &event {
+                Event::End(TagEnd::DefinitionList) => break,
+                Event::Start(Tag::DefinitionListTitle) => {
+                    entries.push(DefinitionEntry {
+                        term: Vec::new(),
+                        definitions: Vec::new(),
+                    });
+                    part = Part::Term;
+                    continue;
+                }
+                Event::Start(Tag::DefinitionListDefinition) => {
+                    if entries.is_empty() {
+                        entries.push(DefinitionEntry {
+                            term: Vec::new(),
+                            definitions: Vec::new(),
+                        });
+                    }
+                    entries.last_mut().unwrap().definitions.push(Vec::new());
+                    part = Part::Definition;
+                    continue;
+                }
+                Event::End(TagEnd::DefinitionListTitle | TagEnd::DefinitionListDefinition) => {
+                    part = Part::Between;
+                    continue;
+                }
+                _ => {}
+            }
+        }
+        match &event {
+            Event::Start(Tag::DefinitionList) => depth += 1,
+            Event::End(TagEnd::DefinitionList) => depth -= 1,
+            _ => {}
+        }
+        let Some(entry) = entries.last_mut() else {
+            continue;
+        };
+        match part {
+            Part::Term => entry.term.push((event, src_span)),
+            Part::Definition => {
+                if let Some(definition) = entry.definitions.last_mut() {
+                    definition.push((event, src_span));
+                }
+            }
+            Part::Between => {}
+        }
+    }
+    entries
+}
+
+/// A child ui of `width` that wraps inline content the way the viewer's
+/// top-level layout does.
+fn inline_row(ui: &mut Ui, width: f32, add_contents: impl FnOnce(&mut Ui)) {
+    let layout = egui::Layout::left_to_right(egui::Align::BOTTOM).with_main_wrap(true);
+    ui.allocate_ui_with_layout(egui::vec2(width, 0.0), layout, |ui| {
+        ui.set_width(width);
+        ui.set_row_height(ui.text_style_height(&TextStyle::Body));
+        add_contents(ui);
+    });
 }
 
 pub struct CommonMarkViewerInternal {
@@ -303,13 +388,17 @@ impl CommonMarkViewerInternal {
     ) {
         self.event(ui, event, src_span, cache, options, max_width);
 
-        self.def_list_def_wrapping(events, max_width, cache, options, ui);
+        self.definition_list(events, max_width, cache, options, ui);
         self.item_list_wrapping(events, max_width, cache, options, ui);
         self.table(events, cache, options, ui, max_width);
         self.blockquote(events, max_width, cache, options, ui);
     }
 
-    fn def_list_def_wrapping<'e>(
+    /// Lays out a definition list as two columns: terms on the left in a
+    /// column fitted to the widest term up to a third of the width, and their
+    /// definitions on the right. A term wider than a third takes its own line
+    /// and its definitions start below it at the column edge.
+    fn definition_list<'e>(
         &mut self,
         events: &mut Peekable<impl Iterator<Item = EventIteratorItem<'e>>>,
         max_width: f32,
@@ -317,57 +406,143 @@ impl CommonMarkViewerInternal {
         options: &CommonMarkOptions,
         ui: &mut Ui,
     ) {
-        if self.def_list.is_def_list_def {
-            self.def_list.is_def_list_def = false;
+        if !self.def_list.is_def_list {
+            return;
+        }
+        self.def_list.is_def_list = false;
 
-            let item_events = delayed_events(events, |tag| {
-                matches!(tag, pulldown_cmark::TagEnd::DefinitionListDefinition)
-            });
+        let entries = parse_definition_list(events);
+        self.line.try_insert_start(ui);
+        // Blocks after the first inside a definition start on a new line,
+        // also when the list is the document's first element.
+        self.line.should_not_start_newline_forced = false;
 
-            let mut events_iter = item_events.into_iter().enumerate().peekable();
+        let gap = ui.text_style_height(&TextStyle::Body);
+        let width = ui.available_width().min(max_width);
+        let cap = width / 3.0;
+        let term_widths: Vec<f32> = entries
+            .iter()
+            .map(|entry| self.definition_term_width(ui, &entry.term, cache, options, max_width))
+            .collect();
+        let column = term_widths
+            .iter()
+            .copied()
+            .filter(|w| *w <= cap)
+            .reduce(f32::max)
+            .unwrap_or(cap);
+        let body_width = (width - column - gap).max(0.0);
 
-            self.line.try_insert_start(ui);
-
-            // Proccess a single event separately so that we do not insert spaces where we do not
-            // want them
-            self.line.should_start_newline = false;
-            if let Some((_, (e, src_span))) = events_iter.next() {
-                self.process_event(ui, &mut events_iter, e, src_span, cache, options, max_width);
-            }
-
-            ui.label(" ".repeat(options.indentation_spaces));
-            self.line.should_start_newline = true;
-            self.line.should_end_newline = false;
-            // Required to ensure that the content is aligned with the identation
-            ui.horizontal_wrapped(|ui| {
-                while let Some((_, (e, src_span))) = events_iter.next() {
-                    self.process_event(
-                        ui,
-                        &mut events_iter,
-                        e,
-                        src_span,
-                        cache,
-                        options,
-                        max_width,
-                    );
+        ui.vertical(|ui| {
+            ui.set_max_width(width);
+            for (i, (entry, term_width)) in entries.into_iter().zip(term_widths).enumerate() {
+                if i > 0 {
+                    ui.add_space(gap);
                 }
-            });
-            self.line.should_end_newline = true;
+                let mut term = Some(entry.term);
+                if term_width > cap {
+                    let term = term.take().unwrap();
+                    inline_row(ui, width, |ui| {
+                        self.definition_term(ui, term, cache, options, max_width)
+                    });
+                }
+                ui.horizontal_top(|ui| {
+                    if let Some(term) = term {
+                        inline_row(ui, column, |ui| {
+                            self.definition_term(ui, term, cache, options, max_width)
+                        });
+                    } else {
+                        ui.add_space(column);
+                    }
+                    ui.add_space(gap);
+                    ui.vertical(|ui| {
+                        ui.set_max_width(body_width);
+                        for definition in entry.definitions {
+                            inline_row(ui, body_width, |ui| {
+                                self.definition_body(ui, definition, cache, options, body_width)
+                            });
+                        }
+                    });
+                });
+            }
+        });
 
-            // Only end the definition items line if it is not the last element in the list
+        if events.peek().is_none() {
+            self.line.should_end_newline_forced = false;
+        }
+        self.line.try_insert_end(ui);
+    }
+
+    /// Natural single-line width of a term, measured by an invisible
+    /// rendering pass that allocates no space in `ui`.
+    fn definition_term_width(
+        &mut self,
+        ui: &mut Ui,
+        term: &[(pulldown_cmark::Event<'_>, Range<usize>)],
+        cache: &mut CommonMarkCache,
+        options: &CommonMarkOptions,
+        max_width: f32,
+    ) -> f32 {
+        let mut sizing = ui.new_child(
+            egui::UiBuilder::new()
+                .sizing_pass()
+                .invisible()
+                .layout(egui::Layout::left_to_right(egui::Align::BOTTOM)),
+        );
+        self.definition_term(&mut sizing, term.to_vec(), cache, options, max_width);
+        sizing.min_rect().width()
+    }
+
+    /// Renders a term's inline events in bold.
+    fn definition_term(
+        &mut self,
+        ui: &mut Ui,
+        term: Vec<(pulldown_cmark::Event<'_>, Range<usize>)>,
+        cache: &mut CommonMarkCache,
+        options: &CommonMarkOptions,
+        max_width: f32,
+    ) {
+        let strong = std::mem::replace(&mut self.text_style.strong, true);
+        let start = std::mem::replace(&mut self.line.should_start_newline, false);
+        let end = std::mem::replace(&mut self.line.should_end_newline, false);
+        for (event, src_span) in term {
+            // Explicit `**…**` inside a term must not end the term's bold.
             if !matches!(
-                events.peek(),
-                Some((
-                    _,
-                    (
-                        pulldown_cmark::Event::End(pulldown_cmark::TagEnd::DefinitionList),
-                        _
-                    )
-                ))
+                event,
+                pulldown_cmark::Event::Start(pulldown_cmark::Tag::Strong)
+                    | pulldown_cmark::Event::End(pulldown_cmark::TagEnd::Strong)
             ) {
-                self.line.try_insert_end(ui);
+                self.event(ui, event, src_span, cache, options, max_width);
             }
         }
+        self.text_style.strong = strong;
+        self.line.should_start_newline = start;
+        self.line.should_end_newline = end;
+    }
+
+    /// Renders one definition's events, including nested blocks.
+    fn definition_body(
+        &mut self,
+        ui: &mut Ui,
+        definition: Vec<(pulldown_cmark::Event<'_>, Range<usize>)>,
+        cache: &mut CommonMarkCache,
+        options: &CommonMarkOptions,
+        max_width: f32,
+    ) {
+        let start = self.line.should_start_newline;
+        let end = std::mem::replace(&mut self.line.should_end_newline, false);
+        let mut events = definition.into_iter().enumerate().peekable();
+        // The first block starts on the definition's first line; later blocks
+        // start on a new line.
+        self.line.should_start_newline = false;
+        if let Some((_, (event, src_span))) = events.next() {
+            self.process_event(ui, &mut events, event, src_span, cache, options, max_width);
+        }
+        self.line.should_start_newline = true;
+        while let Some((_, (event, src_span))) = events.next() {
+            self.process_event(ui, &mut events, event, src_span, cache, options, max_width);
+        }
+        self.line.should_start_newline = start;
+        self.line.should_end_newline = end;
     }
 
     fn item_list_wrapping<'e>(
@@ -1310,21 +1485,11 @@ impl CommonMarkViewerInternal {
             pulldown_cmark::Tag::MetadataBlock(_) => {}
 
             pulldown_cmark::Tag::DefinitionList => {
-                self.line.try_insert_start(ui);
-                self.def_list.is_first_item = true;
+                self.def_list.is_def_list = true;
             }
-            pulldown_cmark::Tag::DefinitionListTitle => {
-                // we disable newline as the first title should not insert a newline
-                // as we have already done that upon the DefinitionList Tag
-                if !self.def_list.is_first_item {
-                    self.line.try_insert_start(ui)
-                } else {
-                    self.def_list.is_first_item = false;
-                }
-            }
-            pulldown_cmark::Tag::DefinitionListDefinition => {
-                self.def_list.is_def_list_def = true;
-            }
+            // `definition_list` consumes titles and definitions with their list.
+            pulldown_cmark::Tag::DefinitionListTitle
+            | pulldown_cmark::Tag::DefinitionListDefinition => {}
             // Not yet supported
             pulldown_cmark::Tag::Superscript | pulldown_cmark::Tag::Subscript => {}
         }
@@ -1405,8 +1570,9 @@ impl CommonMarkViewerInternal {
 
             pulldown_cmark::TagEnd::MetadataBlock(_) => {}
 
-            pulldown_cmark::TagEnd::DefinitionList => self.line.try_insert_end(ui),
-            pulldown_cmark::TagEnd::DefinitionListTitle
+            // `definition_list` consumes the list through its end tag.
+            pulldown_cmark::TagEnd::DefinitionList
+            | pulldown_cmark::TagEnd::DefinitionListTitle
             | pulldown_cmark::TagEnd::DefinitionListDefinition => {}
             pulldown_cmark::TagEnd::Superscript | pulldown_cmark::TagEnd::Subscript => {}
         }
