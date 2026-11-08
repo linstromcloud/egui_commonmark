@@ -540,12 +540,7 @@ impl CommonMarkViewerInternal {
                 quote!(egui_commonmark_backend::newline(ui);)
             }
             pulldown_cmark::Event::Rule => {
-                let mut stream = TokenStream::new();
-                stream.extend(self.line.try_insert_start());
-
-                let end = self.line.can_insert_end();
-                stream.extend(quote!(egui_commonmark_backend::rule(ui, #end);));
-                stream
+                quote!(egui_commonmark_backend::rule(ui);)
             }
             pulldown_cmark::Event::TaskListMarker(checkbox) => {
                 if options.mutable {

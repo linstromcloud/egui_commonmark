@@ -1126,8 +1126,7 @@ impl CommonMarkViewerInternal {
             }
             pulldown_cmark::Event::HardBreak => newline(ui),
             pulldown_cmark::Event::Rule => {
-                self.line.try_insert_start(ui);
-                rule(ui, self.line.can_insert_end());
+                rule(ui);
             }
             pulldown_cmark::Event::TaskListMarker(mut checkbox) => {
                 if options.mutable {

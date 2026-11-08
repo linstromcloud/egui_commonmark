@@ -1,12 +1,14 @@
 use egui::{self, NumExt, RichText, Sense, TextBuffer, TextStyle, Ui, Vec2, epaint};
 
 #[inline]
-pub fn rule(ui: &mut Ui, end_line: bool) {
-    ui.add(egui::Separator::default().horizontal());
-    // This does not add a new line, but instead ends the separator
-    if end_line {
-        newline(ui);
+pub fn rule(ui: &mut Ui) {
+    // The spacing pads the line equally above and below.
+    let spacing = 2.0 * ui.text_style_height(&TextStyle::Body);
+    // A rule straight after another rule would otherwise share its row.
+    if ui.cursor().min.x > ui.max_rect().min.x {
+        ui.end_row();
     }
+    ui.add(egui::Separator::default().horizontal().spacing(spacing));
 }
 
 #[inline]
