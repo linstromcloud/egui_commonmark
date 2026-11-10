@@ -1318,7 +1318,9 @@ impl CommonMarkViewerInternal {
                 };
                 self.start_tag(ui, tag, options);
                 if let (Some(level), Some(on_heading)) = (level, options.heading_fn) {
-                    on_heading(src_span, level, ui.next_widget_position());
+                    // A zero-size widget is vertically centered in this wrapping row.
+                    // Heading anchors need the row's top so scrolling cannot clip the text.
+                    on_heading(src_span, level, ui.cursor().left_top());
                 }
             }
             pulldown_cmark::Event::End(tag) => self.end_tag(ui, tag, cache, options, max_width),
