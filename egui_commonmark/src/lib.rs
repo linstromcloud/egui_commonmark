@@ -78,6 +78,7 @@ mod parsers;
 
 pub use egui_commonmark_backend::MathDelimiters;
 pub use egui_commonmark_backend::RenderHtmlFn;
+pub use egui_commonmark_backend::HeadingFn;
 pub use egui_commonmark_backend::RenderMathFn;
 pub use egui_commonmark_backend::alerts::{Alert, AlertBundle};
 pub use egui_commonmark_backend::misc::CommonMarkCache;
@@ -98,6 +99,14 @@ pub struct CommonMarkViewer<'f> {
 }
 
 impl<'f> CommonMarkViewer<'f> {
+    /// Observe each rendered heading after its leading spacing is laid out.
+    /// Positions use screen coordinates; ranges refer to the original Markdown.
+    /// Scrollable viewers report only headings rendered in the current frame.
+    pub fn on_heading(mut self, func: Option<&'f HeadingFn<'f>>) -> Self {
+        self.options.heading_fn = func;
+        self
+    }
+
     pub fn new() -> Self {
         Self::default()
     }

@@ -40,6 +40,7 @@ pub struct CommonMarkOptions<'f> {
     pub math_fn: Option<&'f crate::RenderMathFn<'f>>,
     pub math_delimiters: crate::MathDelimiters,
     pub html_fn: Option<&'f crate::RenderHtmlFn<'f>>,
+    pub heading_fn: Option<&'f crate::HeadingFn<'f>>,
     /// Font family used for `**strong**` runs. When `None`, `RichText::strong()`
     /// is applied (color change only). When set, the strong run is rendered
     /// with the given family at body size — letting host apps wire in a
@@ -97,6 +98,7 @@ impl Default for CommonMarkOptions<'_> {
             math_fn: None,
             math_delimiters: Default::default(),
             html_fn: None,
+            heading_fn: None,
             strong_font_family: None,
         }
     }

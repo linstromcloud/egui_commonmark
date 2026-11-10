@@ -30,6 +30,8 @@ pub use misc::CommonMarkCache;
 pub type RenderMathFn<'f> = dyn Fn(&mut egui::Ui, &str, bool) + 'f;
 /// Takes [`egui::Ui`] and the html text to be rendered/used
 pub type RenderHtmlFn<'f> = dyn Fn(&mut egui::Ui, &str) + 'f;
+/// Observes a heading's source range, level (1–6), and top-left layout position.
+pub type HeadingFn<'f> = dyn Fn(std::ops::Range<usize>, u8, egui::Pos2) + 'f;
 
 /// Delimiters recognized when a math renderer is configured.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]

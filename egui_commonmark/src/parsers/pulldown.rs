@@ -1311,7 +1311,16 @@ impl CommonMarkViewerInternal {
         max_width: f32,
     ) {
         match event {
-            pulldown_cmark::Event::Start(tag) => self.start_tag(ui, tag, options),
+            pulldown_cmark::Event::Start(tag) => {
+                let level = match &tag {
+                    pulldown_cmark::Tag::Heading { level, .. } => Some(*level as u8),
+                    _ => None,
+                };
+                self.start_tag(ui, tag, options);
+                if let (Some(level), Some(on_heading)) = (level, options.heading_fn) {
+                    on_heading(src_span, level, ui.next_widget_position());
+                }
+            }
             pulldown_cmark::Event::End(tag) => self.end_tag(ui, tag, cache, options, max_width),
             pulldown_cmark::Event::Text(text) => {
                 self.event_text(text, ui, options);
